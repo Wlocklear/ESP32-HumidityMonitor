@@ -1,6 +1,6 @@
 /*
  ******************************************************************************
- * Humidity Monitor Firmware v1.0
+ * Humidity Monitor Firmware v1.1
  ******************************************************************************
  *
  *  Reads temperature + relative humidity INSIDE and OUTSIDE a container and
@@ -41,7 +41,7 @@
  *
  ******************************************************************************/
 
-#define FIRMWARE_VERSION  "v1.0"
+#define FIRMWARE_VERSION  "v1.1"
 
 // ============================================================
 //  PIN DEFINITIONS  (ESP32-S3)
@@ -605,10 +605,17 @@ void handleWiFiScanResult() {
 // ============================================================
 void startAPPortal() {
   inAPMode = true;
-  Serial.printf("[WiFi] Starting AP: %s\n", AP_SSID);
+
+  // Append the last 2 bytes of the MAC so two freshly-flashed units don't both
+  // broadcast the same "ESP32-Setup" — each board's AP is uniquely identifiable.
+  String mac = WiFi.macAddress();          // AA:BB:CC:DD:EE:FF
+  mac.replace(":", "");
+  String apSsid = String(AP_SSID) + "-" + mac.substring(mac.length() - 4);
+
+  Serial.printf("[WiFi] Starting AP: %s\n", apSsid.c_str());
   WiFi.mode(WIFI_AP);
-  if (strlen(AP_PASS) >= 8) WiFi.softAP(AP_SSID, AP_PASS);
-  else                      WiFi.softAP(AP_SSID);
+  if (strlen(AP_PASS) >= 8) WiFi.softAP(apSsid.c_str(), AP_PASS);
+  else                      WiFi.softAP(apSsid.c_str());
   Serial.printf("[WiFi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
 
   server.on("/", HTTP_GET, []() {
@@ -767,6 +774,7 @@ void handleRoot() {
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',Arial,sans-serif;
      padding:1rem;max-width:600px;margin:auto}
+@media(min-width:800px){body{max-width:900px}canvas{height:180px}}
 h1{text-align:center;color:var(--acc);font-size:1.3rem;margin:.8rem 0 .3rem}
 .card{background:var(--card);border:1px solid var(--bdr);border-radius:14px;
       padding:1.2rem 1.4rem;margin-bottom:1rem}
@@ -820,6 +828,14 @@ canvas{width:100%;height:120px;display:block;margin-top:.2rem}
 .dirty{color:var(--warn);font-size:.8rem;align-self:center;display:none}
 .ota-link{display:block;text-align:center;color:var(--acc);text-decoration:none;
           font-size:.92rem;font-weight:600;padding:.4rem 0}
+.net-card>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:.6rem}
+.net-card>summary::-webkit-details-marker{display:none}
+.net-card>summary h2{margin-bottom:0}
+.summ-info{margin-left:auto;font-size:.8rem;color:var(--dim);
+           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chev{color:var(--dim);font-size:.7rem;transition:transform .2s;flex:none}
+.net-card[open]>summary .chev{transform:rotate(90deg)}
+.net-card[open]>summary .summ-info{display:none}
 </style>
 </head>
 <body>
@@ -836,32 +852,32 @@ canvas{width:100%;height:120px;display:block;margin-top:.2rem}
   </div>
   <div class="twin">
     <div class="twin-item">
-      <div class="twin-hdr twin-in">Inside</div>
+      <div class="twin-hdr twin-in">Filament Box Sensor</div>
       <div class="big" id="inHum">--%</div>
       <div class="sub" id="inTemp">--&deg;F</div>
       <div class="dew">Dew point <span id="inDew">--</span></div>
     </div>
     <div class="twin-item">
-      <div class="twin-hdr twin-out">Outside</div>
+      <div class="twin-hdr twin-out">Outside Air Sensor</div>
       <div class="big" id="outHum">--%</div>
       <div class="sub" id="outTemp">--&deg;F</div>
       <div class="dew">Dew point <span id="outDew">--</span></div>
     </div>
   </div>
 
-  <div class="row" style="margin-top:.9rem"><span class="lbl">Difference (inside &minus; outside)</span>
+  <div class="row" style="margin-top:.9rem"><span class="lbl">Difference (Filament Box &minus; Outside Air)</span>
     <span class="val" id="delta">--</span></div>
-  <div class="row"><span class="lbl">Inside sensor</span>
+  <div class="row"><span class="lbl">Filament Box sensor</span>
     <span id="inBadge" class="badge">--</span></div>
-  <div class="row"><span class="lbl">Outside sensor</span>
+  <div class="row"><span class="lbl">Outside Air sensor</span>
     <span id="outBadge" class="badge">--</span></div>
   <div class="last-read">Last read: <span id="lastRead">--</span></div>
 
   <div class="chart-hdr">
     <span>Humidity (%) &mdash; 2 weeks</span>
     <span class="legend">
-      <span><i class="dot" style="background:#4fcfef"></i>In</span>
-      <span><i class="dot" style="background:#c08ef7"></i>Out</span>
+      <span><i class="dot" style="background:#4fcfef"></i>Box</span>
+      <span><i class="dot" style="background:#c08ef7"></i>Air</span>
     </span>
   </div>
   <canvas id="humChart"></canvas>
@@ -869,8 +885,8 @@ canvas{width:100%;height:120px;display:block;margin-top:.2rem}
   <div class="chart-hdr">
     <span>Temperature (&deg;F) &mdash; 2 weeks</span>
     <span class="legend">
-      <span><i class="dot" style="background:#4fcfef"></i>In</span>
-      <span><i class="dot" style="background:#c08ef7"></i>Out</span>
+      <span><i class="dot" style="background:#4fcfef"></i>Box</span>
+      <span><i class="dot" style="background:#c08ef7"></i>Air</span>
     </span>
   </div>
   <canvas id="tempChart"></canvas>
@@ -882,26 +898,14 @@ canvas{width:100%;height:120px;display:block;margin-top:.2rem}
   </div>
 </div>
 
-<!-- SETTINGS -->
-<div class="card">
-  <h2>Settings</h2>
-  <div class="row">
-    <span class="lbl">Inside RH alert above (%)</span>
-    <input type="number" class="input-sm" id="rhAlertInput" min="5" max="90"
-           oninput="markDirty()" value="20">
-  </div>
-  <div class="row" style="border:none;padding-top:.5rem;font-size:.76rem;color:var(--dim)">
-    Display only &mdash; this device does not control a heater.
-  </div>
-  <div class="btn-row">
-    <button class="b-blue" onclick="saveSettings()">Save Settings</button>
-    <span id="dirtyNote" class="dirty">&#9679; Unsaved changes</span>
-  </div>
-</div>
-
 <!-- NETWORK -->
-<div class="card">
-  <h2>Network</h2>
+<details class="card net-card">
+  <summary>
+    <h2>Network</h2>
+    <span class="summ-info" id="netSummary">--</span>
+    <span class="chev">&#x25B6;</span>
+  </summary>
+  <div class="net-body">
   <div class="row"><span class="lbl">SSID</span><span class="val" id="ssid">--</span></div>
   <div class="row"><span class="lbl">IP address</span><span class="val" id="ip">--</span></div>
   <div class="row"><span class="lbl">MAC address</span><span class="val" id="mac">--</span></div>
@@ -934,7 +938,8 @@ canvas{width:100%;height:120px;display:block;margin-top:.2rem}
   <div class="btn-row" style="margin-top:1rem">
     <button class="b-red" onclick="resetWiFi()">Reset WiFi credentials</button>
   </div>
-</div>
+  </div>
+</details>
 
 <!-- OTA -->
 <div class="card">
@@ -985,7 +990,7 @@ function drawDual(canvasId,pts,unit){
   var cv=$(canvasId);
   if(!cv||!pts||pts.length<2) return;
   var dpr=window.devicePixelRatio||1;
-  var LEFT=36,AXIS=18,CH=120;
+  var LEFT=36,AXIS=18,CH=cv.offsetHeight||120;
   cv.width=cv.offsetWidth*dpr;cv.height=CH*dpr;
   var ctx=cv.getContext('2d');ctx.scale(dpr,dpr);
   var W=cv.offsetWidth,plotW=W-LEFT,plotH=CH-AXIS;
@@ -1048,11 +1053,6 @@ function drawDual(canvasId,pts,unit){
   }
 }
 
-// ── Dirty flag ────────────────────────────────────────────
-var settingsDirty=false;
-function markDirty(){settingsDirty=true;$('dirtyNote').style.display='inline';}
-function clearDirty(){settingsDirty=false;$('dirtyNote').style.display='none';}
-
 // ── Rendering ─────────────────────────────────────────────
 function fmtNum(v,suffix,digits){
   return v==null?'--':v.toFixed(digits==null?1:digits)+suffix;
@@ -1083,7 +1083,7 @@ function applyStatus(d){
   $('uptimeEl').textContent='Uptime: '+uptimeStr(d.uptime||0);
   $('versionEl').textContent='Firmware: '+(d.firmware||'');
 
-  applySide('in',  d.inside,  d.rhAlert||20);
+  applySide('in',  d.inside,  null);
   applySide('out', d.outside, null);
 
   var dh=d.delta?d.delta.hum:null, dt=d.delta?d.delta.temp:null;
@@ -1095,8 +1095,7 @@ function applyStatus(d){
   $('lastRead').textContent=d.lastRead||'--';
   $('histCount').textContent=(d.historyCount||0)+' points logged';
 
-  if(!settingsDirty) $('rhAlertInput').value=d.rhAlert||20;
-
+  $('netSummary').textContent=(d.ssid||'--')+' · '+(d.ip||'--');
   $('ssid').textContent     =d.ssid;
   $('ip').textContent       =d.ip;
   $('mac').textContent      =d.mac;
@@ -1138,11 +1137,6 @@ function refreshSensors(){
       $('upd').textContent='Manually refreshed: '+new Date().toLocaleTimeString();
     })
     .catch(function(){toast('Refresh failed');});
-}
-function saveSettings(){
-  api('/settings?rhAlert='+$('rhAlertInput').value)
-    .then(function(r){return r.json();})
-    .then(function(d){if(d.ok){toast('Settings saved');clearDirty();}else toast('Save failed');update();});
 }
 function renameDevice(){
   var name=$('renameInput').value.trim();
