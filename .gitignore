@@ -1,5 +1,24 @@
-.pio
-.cache
-.dummy
-.vscode/
+# PlatformIO / build
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+*.bin
+*.elf
+*.hex
+*.map
 compile_commands.json
+.cache/
+
+# Secrets / personal data â€” never committed (commit a *.example.h template instead)
+include/user_config.h
+include/secrets.h
+
+# OS / editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project-specific
+.dummy

@@ -1,53 +1,10 @@
-/*
- ******************************************************************************
- * Humidity Monitor Firmware v1.1
- ******************************************************************************
- *
- *  Reads temperature + relative humidity INSIDE and OUTSIDE a container and
- *  serves them on a web dashboard. Monitor only — no relay, no heater, no
- *  control loop. (For the heater/drying state machine see HumidityController.)
- *
- *  TARGET BOARD:
- *    ESP32-S3-DevKitC-1  (env:esp32s3)
- *
- *  WHY TWO I2C BUSES:
- *    The AHT30 has a hard-wired I2C address of 0x38 with no address-select
- *    pin, so two of them can never share one bus. The ESP32-S3 has two full
- *    hardware I2C controllers (SOC_HP_I2C_NUM == 2), so each sensor gets its
- *    own bus and both keep address 0x38.
- *
- *    This is why the firmware is S3-only. On the ESP32-C6 there is just one
- *    high-power I2C controller; its `Wire1` maps to the pin-restricted
- *    low-power LP_I2C peripheral. Porting to C6 means an I2C mux or a
- *    different outside sensor (SHT31 @ 0x44, BME280 @ 0x76).
- *
- *  WIRING:
- *    Inside  AHT30 → SDA GPIO 8,  SCL GPIO 9    (Wire  / I2C0)
- *    Outside AHT30 → SDA GPIO 10, SCL GPIO 11   (Wire1 / I2C1)
- *    Both sensors: VIN → 3V3, GND → GND. Each bus needs its own pull-ups;
- *    most AHT30 breakouts already carry them.
- *
- *  HTTP API:
- *    GET /                current dashboard (HTML)
- *    GET /status         current readings + network + settings (small JSON)
- *    GET /history        downsampled history for the charts (JSON)
- *    GET /history.csv    full history, streamed as CSV
- *    GET /sensor/refresh force an immediate read, returns /status payload
- *    GET /health         "OK"
- *
- *  History is kept separate from /status on purpose: at 4032 points a combined
- *  payload would be hundreds of KB and would have to be serialized into a
- *  single heap String on every poll.
- *
- ******************************************************************************/
+// Humidity Monitor firmware — hardware, wiring and operation: see README.md
+#include "version.h"
+#define FIRMWARE_VERSION "v" FW_VERSION
 
-#define FIRMWARE_VERSION  "v1.1"
-
-// ============================================================
 //  PIN DEFINITIONS  (ESP32-S3)
 //    Avoids strapping pins (0/3/45/46), USB (19/20) and the
 //    flash/PSRAM pins (26-37) used by the N16R8 modules.
-// ============================================================
 #define SDA_INSIDE    8
 #define SCL_INSIDE    9
 #define SDA_OUTSIDE  10
@@ -55,40 +12,25 @@
 
 #define I2C_HZ  100000UL   // AHT30 is rated to 400 kHz; 100 kHz tolerates long leads
 
-// ============================================================
 //  AP PORTAL / OTA
-// ============================================================
 #define AP_SSID   "ESP32-Setup"
 #define AP_PASS   ""
 #define OTA_USER  "admin"
 #define OTA_PASS  "pw"
 
-// ============================================================
 //  DEFAULTS  (user-adjustable via web UI / NVS)
-// ============================================================
 #define DEFAULT_DEVICE_NAME  "HumidityMonitor"
 #define DEFAULT_RH_ALERT     20.0f   // % — inside RH above this shows red
 
-// ============================================================
 //  TIMING
-// ============================================================
 #define READ_INTERVAL_MS     300000UL   // 5 min — matches the history span below
 #define WIFI_RETRY_INTERVAL   30000UL
 
-// ============================================================
-//  SENSOR HISTORY
-//    4032 x 5 min = 2 weeks. Readings are stored as tenths in
-//    int16_t (12 bytes/point, ~48 KB total) rather than floats,
-//    which would double the static footprint for no added
-//    precision — the AHT30 resolves ~0.024 %RH / 0.01 degC.
-// ============================================================
 #define HISTORY_SIZE  4032
 #define HIST_NA       INT16_MIN    // sentinel for "no reading"
 #define HIST_MAX_PTS  480          // max points returned by /history
 
-// ============================================================
 //  INCLUDES
-// ============================================================
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -104,16 +46,12 @@
 #include <esp_task_wdt.h>
 #include <Adafruit_AHTX0.h>
 
-// ============================================================
 //  OBJECTS
-// ============================================================
 WebServer   server(80);
 Preferences prefs;
 
-// ============================================================
 //  SENSORS
 //    One AHT30 per I2C bus. Both live at 0x38.
-// ============================================================
 struct Sensor {
   Adafruit_AHTX0 dev;
   TwoWire*       bus;
@@ -129,9 +67,7 @@ struct Sensor {
 Sensor inside  = { {}, &Wire,  SDA_INSIDE,  SCL_INSIDE,  "inside",  0, false, NAN, NAN };
 Sensor outside = { {}, &Wire1, SDA_OUTSIDE, SCL_OUTSIDE, "outside", 1, false, NAN, NAN };
 
-// ============================================================
 //  RUNTIME STATE
-// ============================================================
 String deviceName;
 float  rhAlert = DEFAULT_RH_ALERT;
 
@@ -155,9 +91,7 @@ HistPoint history[HISTORY_SIZE];
 int historyHead  = 0;
 int historyCount = 0;
 
-// ============================================================
 //  FORWARD DECLARATIONS
-// ============================================================
 bool   connectWiFi();
 void   startAPPortal();
 void   startMDNS();
@@ -168,9 +102,7 @@ String getTimeString();
 String buildStatusJson();
 bool   checkCsrf();
 
-// ============================================================
 //  NVS HELPERS
-// ============================================================
 void loadPrefs() {
   prefs.begin("system", true);
   deviceName = prefs.getString("name",    DEFAULT_DEVICE_NAME);
@@ -211,9 +143,7 @@ void clearWiFiCreds() {
   prefs.end();
 }
 
-// ============================================================
 //  CSRF
-// ============================================================
 void generateCsrfToken() {
   csrfToken = "";
   for (int i = 0; i < 16; i++) csrfToken += String(esp_random() & 0xF, HEX);
@@ -229,9 +159,7 @@ bool checkCsrf() {
   return true;
 }
 
-// ============================================================
 //  mDNS
-// ============================================================
 String sanitizeMDNS(const String &input) {
   String out = "";
   for (int i = 0; i < (int)input.length(); i++) {
@@ -258,9 +186,7 @@ void startMDNS() {
   }
 }
 
-// ============================================================
 //  TIME
-// ============================================================
 void setupTime() {
   configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.nist.gov");
   Serial.println("[NTP] Sync requested");
@@ -278,17 +204,13 @@ String getTimeString() {
   return String(buf);
 }
 
-// ============================================================
 //  POWER MANAGEMENT
-// ============================================================
 void setupPowerManagement() {
   esp_wifi_set_ps(WIFI_PS_NONE);
   Serial.println("[Power] Always-on mode");
 }
 
-// ============================================================
 //  DERIVED VALUES
-// ============================================================
 
 // Magnus-Tetens dew point. Below the dew point, moisture condenses out of the
 // air — comparing the outside dew point against the inside temperature tells
@@ -302,9 +224,7 @@ float dewPointF(float rh, float tF) {
   return dC * 9.0f / 5.0f + 32.0f;
 }
 
-// ============================================================
 //  HISTORY ENCODING
-// ============================================================
 int16_t encTenths(float v) {
   if (isnan(v)) return HIST_NA;
   long t = lroundf(v * 10.0f);
@@ -328,9 +248,7 @@ void pushHistory() {
   if (historyCount < HISTORY_SIZE) historyCount++;
 }
 
-// ============================================================
 //  SENSORS
-// ============================================================
 bool initSensor(Sensor &s, bool startBus) {
   if (startBus) {
     s.bus->begin(s.sda, s.scl, I2C_HZ);
@@ -374,9 +292,7 @@ void readSensors() {
                 inside.hum, inside.tempF, outside.hum, outside.tempF);
 }
 
-// ============================================================
 //  WiFi SIGNAL
-// ============================================================
 String wifiQuality(int rssi) {
   if (!WiFi.isConnected()) return "Disconnected";
   if (rssi > -50) return "Excellent";
@@ -385,9 +301,7 @@ String wifiQuality(int rssi) {
   return "Weak";
 }
 
-// ============================================================
 //  STATUS JSON  (small — polled frequently)
-// ============================================================
 void addSensorJson(JsonObject o, const Sensor &s) {
   o["online"] = s.online;
   if (isnan(s.hum))   o["hum"]  = nullptr; else o["hum"]  = roundf(s.hum   * 10.0f) / 10.0f;
@@ -436,10 +350,8 @@ String buildStatusJson() {
   return out;
 }
 
-// ============================================================
 //  HISTORY JSON  (downsampled — a full 4032-point payload would
 //  be hundreds of KB in a single heap String)
-// ============================================================
 void handleHistory() {
   int maxPts = server.hasArg("max") ? server.arg("max").toInt() : HIST_MAX_PTS;
   if (maxPts < 2)            maxPts = 2;
@@ -469,9 +381,7 @@ void handleHistory() {
   server.send(200, "application/json", out);
 }
 
-// ============================================================
 //  HISTORY CSV  (streamed in chunks — never built in one String)
-// ============================================================
 void appendTenths(String &dst, int16_t enc) {
   if (enc == HIST_NA) return;              // empty cell
   dst += String(enc / 10.0f, 1);
@@ -512,9 +422,7 @@ void handleHistoryCsv() {
   server.sendContent("");   // terminate the chunked response
 }
 
-// ============================================================
 //  WEB ROUTE HANDLERS
-// ============================================================
 void handleStatus() { server.send(200, "application/json", buildStatusJson()); }
 void handleHealth() { server.send(200, "text/plain", "OK"); }
 
@@ -600,9 +508,7 @@ void handleWiFiScanResult() {
   server.send(200, "application/json", out);
 }
 
-// ============================================================
 //  AP SETUP PORTAL
-// ============================================================
 void startAPPortal() {
   inAPMode = true;
 
@@ -728,9 +634,7 @@ doScan();
   server.begin();
 }
 
-// ============================================================
 //  WiFi — STATION CONNECT
-// ============================================================
 bool connectWiFi() {
   String ssid, pass;
   loadWiFiCreds(ssid, pass);
@@ -754,9 +658,7 @@ bool connectWiFi() {
   return false;
 }
 
-// ============================================================
 //  DASHBOARD
-// ============================================================
 void handleRoot() {
   server.send(200, "text/html", R"DASH(
 <!DOCTYPE html>
@@ -1202,9 +1104,7 @@ loadHistory();
 )DASH");
 }
 
-// ============================================================
 //  ROUTE REGISTRATION
-// ============================================================
 void setupRoutes() {
   server.on("/",                 HTTP_GET,  handleRoot);
   server.on("/status",           HTTP_GET,  handleStatus);
@@ -1226,9 +1126,7 @@ void setupRoutes() {
   server.collectHeaders(keep, 1);
 }
 
-// ============================================================
 //  ArduinoOTA
-// ============================================================
 void setupArduinoOTA() {
   ArduinoOTA.setHostname(sanitizeMDNS(deviceName).c_str());
   ArduinoOTA.onStart([]() {
@@ -1248,9 +1146,7 @@ void setupArduinoOTA() {
   Serial.println("[ArduinoOTA] Ready on port 3232");
 }
 
-// ============================================================
 //  SETUP
-// ============================================================
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -1292,9 +1188,7 @@ void setup() {
   nextReadAt = 0;   // read immediately
 }
 
-// ============================================================
 //  LOOP
-// ============================================================
 void loop() {
   server.handleClient();
   ElegantOTA.loop();
