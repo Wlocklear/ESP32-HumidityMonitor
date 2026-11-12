@@ -1,0 +1,67 @@
+name: Build firmware
+
+# Compiles every non-OTA PlatformIO environment on each push, so a broken
+# build shows up as a red X on the commit instead of at the workbench.
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+      - '**.jpg'
+      - '**.jpeg'
+      - '**.png'
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # user_config.h / secrets.h are gitignored. Build against the committed
+      # *.example.h templates so the code compiles without real credentials.
+      - name: Stand in example config headers
+        run: |
+          for ex in $(find include src -name '*.example.h' 2>/dev/null); do
+            real="${ex%.example.h}.h"
+            if [ ! -f "$real" ]; then
+              cp "$ex" "$real"
+              echo "Using $ex as $real"
+            fi
+          done
+
+      - name: Build all non-OTA environments
+        run: |
+          envs=$(grep -oE '^\[env:[^]]+\]' platformio.ini | sed -E 's/^\[env:(.*)\]$/\1/' | grep -vi 'ota')
+          echo "Environments: $envs"
+          args=""
+          for e in $envs; do args="$args -e $e"; done
+          pio run $args
+
+      - name: Firmware size summary
+        if: success()
+        run: |
+          echo "### Firmware built" >> "$GITHUB_STEP_SUMMARY"
+          find .pio/build -maxdepth 2 -name firmware.bin -printf '| %h | %s bytes |\n' \
+            | sed 's|.pio/build/||' >> "$GITHUB_STEP_SUMMARY"
